@@ -1,4 +1,5 @@
 from fpdf import FPDF
+import traceback
 from utils import clean_text_for_pdf, parse_ai_resume
 
 class PDF(FPDF):
@@ -8,13 +9,13 @@ class PDF(FPDF):
 
     def header(self):
         if self.page_no() == 1:
-            self.set_font("Arial", "B", 18)
+            self.set_font("Helvetica", "B", 18)
             self.set_text_color(30, 30, 30)
             name = self.header_fields.get('name', '').strip()
             if name:
                 self.cell(0, 12, clean_text_for_pdf(name), ln=True, align="C")
             self.ln(2)
-            self.set_font("Arial", "", 10)
+            self.set_font("Helvetica", "", 10)
             contact_line = []
             for field in ['location', 'phone', 'email']:
                 value = self.header_fields.get(field, '').strip()
@@ -29,7 +30,7 @@ class PDF(FPDF):
                 if url:
                     links.append((label, url if url.startswith("http") else "https://" + url))
             if links:
-                self.set_font("Arial", "U", 10)
+                self.set_font("Helvetica", "U", 10)
                 self.set_text_color(0, 102, 204)
                 link_line = " | ".join(label for label, _ in links)
                 self.set_x((210 - self.get_string_width(link_line)) / 2)
@@ -38,11 +39,11 @@ class PDF(FPDF):
                         self.write(7, " | ")
                     self.write(7, label, url)
                 self.set_text_color(0, 0, 0)
-                self.set_font("Arial", "", 11)
+                self.set_font("Helvetica", "", 11)
                 self.ln(8)
 
     def section_title(self, title):
-        self.set_font("Arial", "B", 12)
+        self.set_font("Helvetica", "B", 12)
         self.set_text_color(0, 102, 204)
         self.cell(0, 8, title.upper(), ln=True)
         self.set_text_color(0, 0, 0)
@@ -53,7 +54,7 @@ class PDF(FPDF):
         self.ln(4)
 
     def add_bullets(self, lines):
-        self.set_font("Arial", "", 11)
+        self.set_font("Helvetica", "", 11)
         for line in lines:
             if line.strip():
                 self.cell(8)
@@ -61,12 +62,12 @@ class PDF(FPDF):
                 self.ln(2)
 
     def add_simple(self, text):
-        self.set_font("Arial", "", 11)
+        self.set_font("Helvetica", "", 11)
         self.multi_cell(0, 6, text)
         self.ln(2)
 
     def add_project(self, title, description, technologies, year):
-        self.set_font("Arial", "B", 11)
+        self.set_font("Helvetica", "B", 11)
         project_title = clean_text_for_pdf(title) if title else ""
         tech_year_parts = []
         if technologies:
@@ -75,14 +76,14 @@ class PDF(FPDF):
             tech_year_parts.append(clean_text_for_pdf(year))
         if tech_year_parts:
             self.cell(0, 6, project_title, ln=False)
-            self.set_font("Arial", "", 11)
+            self.set_font("Helvetica", "", 11)
             self.cell(0, 6, f" | {' | '.join(tech_year_parts)}", ln=True)
         else:
             self.cell(0, 6, project_title, ln=True)
         self.ln(1)
         if description:
             bullets = description.split(';')
-            self.set_font("Arial", "", 11)
+            self.set_font("Helvetica", "", 11)
             for bullet in bullets:
                 bullet = bullet.strip().lstrip('- •—◦▪').strip()
                 if bullet:
@@ -146,4 +147,6 @@ def generate_pdf(resume_content: str, header_fields: dict) -> bytes:
         pdf.body(parsed)
         return pdf.output(dest='S').encode('latin1', 'ignore')
     except Exception as e:
+        print("PDF generation error:", e)
+        traceback.print_exc()
         return None
