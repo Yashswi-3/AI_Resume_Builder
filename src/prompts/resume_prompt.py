@@ -44,7 +44,7 @@ CLEANING_OUTPUT_SCHEMA = {
 
 SECTION_OUTPUT_SCHEMAS = {
     "professional_summary": {"items": ["impact line 1", "impact line 2"]},
-    "skills": {"items": ["Python", "Distributed Systems", "REST APIs"]},
+    "skills": {"items": ["skill_one", "skill_two", "skill_three"]},
     "education": {"items": ["Degree | Institution | Duration | Location | Details"]},
     "experience": {
         "items": [

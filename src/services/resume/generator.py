@@ -94,10 +94,13 @@ LOCATION_HINT_TOKENS = {
     "india",
     "bangalore",
     "bengaluru",
+    "in-office",
     "delhi",
     "mumbai",
     "pune",
     "noida",
+    "greater noida",
+    "uttar pradesh",
     "hyderabad",
     "onsite",
     "hybrid",
@@ -169,6 +172,16 @@ SEMANTIC_STOPWORDS = {
     "into",
 }
 
+TRUNCATED_NAME_ENDINGS = {
+    "in",
+    "for",
+    "to",
+    "of",
+    "and",
+    "with",
+    "on",
+}
+
 
 class ResumeGenerator:
     def __init__(
@@ -187,7 +200,14 @@ class ResumeGenerator:
 
         try:
             local_clean_payload = self._build_local_cleaning_payload(resume_input)
-            cleaned_payload, cleaning_meta = self._run_cleaning_pass(resume_input, local_clean_payload)
+            # Permanent guardrail: keep structure deterministic from local parsing.
+            # AI is used as a section rewriter, not as the source of structural truth.
+            cleaned_payload = dict(local_clean_payload)
+            cleaning_meta = {
+                "mode": "deterministic_local",
+                "errors": [],
+                "last_call_details": {},
+            }
 
             data, section_meta = self._generate_sectional_payload(cleaned_payload)
             data = self._enrich_with_input_data(resume_input, data)
@@ -304,8 +324,6 @@ class ResumeGenerator:
                 payload[section_name] = self._fallback_section_from_cleaned(section_name, cleaned_payload)
                 section_errors.append(f"{section_name}:{self._safe_error(error)}")
                 last_call_details = self.gemini_client.get_last_call_details()
-
-        payload = self._enforce_section_constraints(payload)
 
         return payload, {
             "errors": section_errors,
@@ -740,17 +758,19 @@ class ResumeGenerator:
         source_primary = primary or {}
         source_fallback = fallback or {}
 
-        role = self._clean_basic_text(source_primary.get("role", "")) or self._clean_basic_text(
-            source_fallback.get("role", "")
+        # Rewrite-only contract for AI sections: preserve deterministic header fields
+        # from fallback whenever available, and let AI primarily improve bullets.
+        role = self._clean_basic_text(source_fallback.get("role", "")) or self._clean_basic_text(
+            source_primary.get("role", "")
         )
-        company = self._clean_basic_text(source_primary.get("company", "")) or self._clean_basic_text(
-            source_fallback.get("company", "")
+        company = self._clean_basic_text(source_fallback.get("company", "")) or self._clean_basic_text(
+            source_primary.get("company", "")
         )
-        duration = self._clean_basic_text(source_primary.get("duration", "")) or self._clean_basic_text(
-            source_fallback.get("duration", "")
+        duration = self._clean_basic_text(source_fallback.get("duration", "")) or self._clean_basic_text(
+            source_primary.get("duration", "")
         )
-        location = self._clean_basic_text(source_primary.get("location", "")) or self._clean_basic_text(
-            source_fallback.get("location", "")
+        location = self._clean_basic_text(source_fallback.get("location", "")) or self._clean_basic_text(
+            source_primary.get("location", "")
         )
 
         combined_highlights = []
@@ -769,14 +789,16 @@ class ResumeGenerator:
         source_primary = primary or {}
         source_fallback = fallback or {}
 
-        name = self._clean_basic_text(source_primary.get("name", "")) or self._clean_basic_text(
-            source_fallback.get("name", "")
+        # Rewrite-only contract for AI sections: preserve deterministic header fields
+        # from fallback whenever available, and let AI primarily improve bullets.
+        name = self._clean_basic_text(source_fallback.get("name", "")) or self._clean_basic_text(
+            source_primary.get("name", "")
         )
-        technologies = self._clean_basic_text(source_primary.get("technologies", "")) or self._clean_basic_text(
-            source_fallback.get("technologies", "")
+        technologies = self._clean_basic_text(source_fallback.get("technologies", "")) or self._clean_basic_text(
+            source_primary.get("technologies", "")
         )
-        year = self._clean_basic_text(source_primary.get("year", "")) or self._clean_basic_text(
-            source_fallback.get("year", "")
+        year = self._clean_basic_text(source_fallback.get("year", "")) or self._clean_basic_text(
+            source_primary.get("year", "")
         )
 
         combined_highlights = []
@@ -815,7 +837,26 @@ class ResumeGenerator:
         duration = self._clean_basic_text(duration)
         location = self._clean_basic_text(location)
 
+        # Some PDF parsers append location text to the role field.
+        split_role, split_location = self._split_role_and_inline_location(role)
+        if split_role:
+            role = split_role
+            if split_location and not location:
+                location = split_location
+
         highlights_clean = self._prioritize_highlights(highlights, max_items=8, max_words=24)
+
+        # If the fourth header field is actually a wrapped bullet, keep it as a highlight.
+        if location and not self._looks_like_location(location):
+            normalized_location = self._normalize_for_noise(location)
+            looks_like_bullet = (
+                len(location.split()) >= 6
+                or self._has_hint_token(location.lower(), ACTION_VERB_TOKENS)
+                or "/" in location
+            )
+            if normalized_location not in PLACEHOLDER_TOKENS and looks_like_bullet:
+                highlights_clean = self._prioritize_highlights([location, *highlights_clean], max_items=8, max_words=24)
+                location = ""
 
         if role and self._normalize_for_noise(role) in PLACEHOLDER_TOKENS:
             role = ""
@@ -910,7 +951,13 @@ class ResumeGenerator:
         if role_clean and len(role_clean.split()) > 14:
             return True
         if role_clean and "," in role_clean and "/" not in role_clean:
-            return True
+            before, after = [part.strip() for part in role_clean.split(",", 1)]
+            looks_inline_location = bool(after) and (
+                self._looks_like_location(after)
+                or self._has_hint_token(after.lower(), LOCATION_HINT_TOKENS)
+            )
+            if not (before and self._looks_like_role(before) and looks_inline_location):
+                return True
         if company_clean and len(company_clean.split()) > 10 and not self._looks_like_company(company_clean):
             return True
         if role_clean and re.search(r"\d", role_clean) and len(role_clean.split()) > 4:
@@ -1075,6 +1122,8 @@ class ResumeGenerator:
         lowered = value.lower()
         if not value or self._looks_like_duration(value):
             return False
+        if "." in value:
+            return False
         if self._has_hint_token(lowered, ROLE_HINT_TOKENS):
             return False
         if self._has_hint_token(lowered, COMPANY_HINT_TOKENS):
@@ -1107,6 +1156,86 @@ class ResumeGenerator:
             if re.search(rf"\b{re.escape(token)}\b", lowered):
                 return True
         return False
+
+    def _split_role_and_inline_location(self, role_text: str) -> Tuple[str, str]:
+        role_value = self._clean_basic_text(role_text)
+        if not role_value or "," not in role_value:
+            return role_value, ""
+
+        role_part, location_part = [part.strip() for part in role_value.split(",", 1)]
+        if not role_part or not location_part:
+            return role_value, ""
+
+        role_ok = self._looks_like_role(role_part) or len(role_part.split()) >= 2
+        location_ok = self._looks_like_location(location_part) or self._has_hint_token(
+            location_part.lower(), LOCATION_HINT_TOKENS
+        )
+        if role_ok and location_ok:
+            return self._clean_basic_text(role_part), self._clean_basic_text(location_part)
+
+        return role_value, ""
+
+    def _strip_trailing_location_from_role(self, role_text: str) -> str:
+        role_value = self._clean_basic_text(role_text)
+        if not role_value:
+            return ""
+
+        # Remove trailing city/work-mode phrases from role-like strings.
+        sorted_tokens = sorted([token for token in LOCATION_HINT_TOKENS if token], key=len, reverse=True)
+        lowered = role_value.lower()
+        for token in sorted_tokens:
+            token_lower = token.lower()
+            suffix = " " + token_lower
+            if lowered.endswith(suffix):
+                candidate = role_value[: -len(suffix)].strip(" ,")
+                if len(candidate.split()) >= 2:
+                    role_value = candidate
+                    lowered = role_value.lower()
+                    break
+
+        role_value = re.sub(
+            r"\s*,\s*(?:in-office|onsite|hybrid|remote)\s*$",
+            "",
+            role_value,
+            flags=re.IGNORECASE,
+        )
+
+        return self._clean_basic_text(role_value)
+
+    def _sanitize_experience_header_parts(
+        self,
+        role: str,
+        company: str,
+        duration: str,
+        location: str,
+    ) -> Tuple[str, str, str, str, str]:
+        role_value = self._clean_basic_text(role)
+        company_value = self._clean_basic_text(company)
+        duration_value = self._clean_basic_text(duration)
+        location_value = self._clean_basic_text(location)
+        promoted_bullet = ""
+
+        split_role, split_location = self._split_role_and_inline_location(role_value)
+        if split_role:
+            role_value = split_role
+        if split_location and not location_value:
+            location_value = split_location
+
+        role_value = self._strip_trailing_location_from_role(role_value)
+
+        if location_value and not self._looks_like_location(location_value):
+            likely_bullet = (
+                len(location_value.split()) >= 6
+                or self._has_hint_token(location_value.lower(), ACTION_VERB_TOKENS)
+                or "/" in location_value
+                or "." in location_value
+                or len(location_value) > 36
+            )
+            if likely_bullet:
+                promoted_bullet = location_value
+                location_value = ""
+
+        return role_value, company_value, duration_value, location_value, promoted_bullet
 
     def _prioritize_highlights(self, values: Any, max_items: int, max_words: int) -> List[str]:
         lines = self._normalize_list(values)
@@ -1367,6 +1496,19 @@ class ResumeGenerator:
                 if current_block is not None:
                     blocks.append(current_block)
 
+                if min_parts == 4:
+                    role, company, duration, location, promoted = self._sanitize_experience_header_parts(
+                        parts[0],
+                        parts[1] if len(parts) > 1 else "",
+                        parts[2] if len(parts) > 2 else "",
+                        parts[3] if len(parts) > 3 else "",
+                    )
+                    header = " | ".join([role, company, duration, location])
+                    current_block = {"header": header, "bullets": []}
+                    if promoted:
+                        current_block["bullets"].append(promoted)
+                    continue
+
                 header = " | ".join(self._clean_basic_text(part) for part in parts[:min_parts])
                 current_block = {"header": header, "bullets": []}
                 continue
@@ -1388,7 +1530,7 @@ class ResumeGenerator:
         seen_headers = set()
         for block in blocks[:max_blocks]:
             header = self._clean_basic_text(block.get("header", ""))
-            header_key = self._normalize_for_noise(header)
+            header_key = self._dedupe_header_key(header, min_parts)
             if not header_key or header_key in seen_headers:
                 continue
 
@@ -1416,6 +1558,33 @@ class ResumeGenerator:
                     break
 
         return result
+
+    def _dedupe_header_key(self, header: str, min_parts: int) -> str:
+        parts = [self._clean_basic_text(part) for part in str(header or "").split("|")]
+        if len(parts) < min_parts:
+            return self._normalize_for_noise(header)
+
+        if min_parts == 4:
+            role = self._normalize_for_noise(self._strip_trailing_location_from_role(self._split_role_and_inline_location(parts[0])[0]))
+            company = self._normalize_for_noise(parts[1])
+            duration = self._normalize_for_noise(parts[2])
+            return f"{role}|{company}|{duration}"
+
+        if min_parts == 3:
+            name = self._semantic_prefix(parts[0], max_tokens=3)
+            year = self._normalize_for_noise(parts[2])
+            return f"{name}|{year}"
+
+        return self._normalize_for_noise(header)
+
+    def _semantic_prefix(self, text: str, max_tokens: int = 3) -> str:
+        key = self._semantic_line_key(text)
+        if not key:
+            return ""
+        tokens = [token for token in key.split() if token]
+        if not tokens:
+            return ""
+        return " ".join(tokens[:max_tokens])
 
     def _extract_keywords_from_job_description(self, text: str) -> List[str]:
         normalized = self._clean_basic_text(text).lower()
@@ -1646,9 +1815,24 @@ class ResumeGenerator:
         }
 
         enriched: Dict[str, Any] = {}
+        section_fallbacks: List[str] = []
         for key in RESPONSE_KEYS:
             ai_values = payload.get(key, [])
-            enriched[key] = list(ai_values) if isinstance(ai_values, list) else self._normalize_list(ai_values)
+            ai_lines = list(ai_values) if isinstance(ai_values, list) else self._normalize_list(ai_values)
+            baseline_lines = list(baseline.get(key, []))
+
+            if not ai_lines:
+                enriched[key] = baseline_lines
+                if baseline_lines:
+                    section_fallbacks.append(key)
+                continue
+
+            if self._should_use_baseline_section(key, ai_lines, baseline_lines):
+                enriched[key] = baseline_lines
+                section_fallbacks.append(key)
+                continue
+
+            enriched[key] = ai_lines
             if not enriched[key]:
                 enriched[key] = list(baseline.get(key, []))
 
@@ -1669,7 +1853,86 @@ class ResumeGenerator:
             if key not in RESPONSE_KEYS:
                 enriched[key] = value
 
+        if section_fallbacks:
+            existing = enriched.get("section_fallbacks", [])
+            merged = list(existing) if isinstance(existing, list) else []
+            for section in section_fallbacks:
+                if section not in merged:
+                    merged.append(section)
+            enriched["section_fallbacks"] = merged
+
         return enriched
+
+    def _should_use_baseline_section(self, section_name: str, ai_lines: List[str], baseline_lines: List[str]) -> bool:
+        if not baseline_lines:
+            return False
+
+        if section_name == "skills":
+            minimum_expected = min(6, len(baseline_lines))
+            return len(ai_lines) < minimum_expected
+
+        if section_name == "experience":
+            return self._is_low_quality_block_section(ai_lines, baseline_lines, min_parts=4)
+
+        if section_name == "projects":
+            return self._is_low_quality_block_section(ai_lines, baseline_lines, min_parts=3)
+
+        if section_name == "education":
+            return len(ai_lines) < min(1, len(baseline_lines))
+
+        return False
+
+    def _is_low_quality_block_section(
+        self,
+        ai_lines: List[str],
+        baseline_lines: List[str],
+        min_parts: int,
+    ) -> bool:
+        ai_headers = self._extract_headers(ai_lines, min_parts=min_parts)
+        baseline_headers = self._extract_headers(baseline_lines, min_parts=min_parts)
+
+        if not ai_headers and baseline_headers:
+            return True
+
+        if len(ai_headers) < len(baseline_headers):
+            return True
+
+        if self._has_redundant_headers(ai_lines, min_parts=min_parts):
+            return True
+
+        for header in ai_headers:
+            if self._is_truncated_header(header, min_parts=min_parts):
+                return True
+
+        return False
+
+    def _extract_headers(self, lines: Sequence[str], min_parts: int) -> List[str]:
+        headers: List[str] = []
+        for line in lines:
+            if "|" not in (line or ""):
+                continue
+            parts = [self._clean_basic_text(part) for part in str(line).split("|")]
+            if len(parts) < min_parts or not parts[0]:
+                continue
+            header = " | ".join(parts[:min_parts])
+            headers.append(header)
+        return headers
+
+    def _is_truncated_header(self, header: str, min_parts: int) -> bool:
+        parts = [self._clean_basic_text(part) for part in str(header or "").split("|")]
+        if len(parts) < min_parts:
+            return True
+
+        title = parts[0]
+        title_words = title.split()
+        if len(title_words) < 2:
+            return True
+
+        last_word = title_words[-1].lower().strip(".,:;!?()[]{}")
+        if last_word in TRUNCATED_NAME_ENDINGS:
+            return True
+
+        return False
 
     def _quality_issues(self, payload: Dict[str, Any], resume_input: ResumeInput) -> List[str]:
         issues: List[str] = []

@@ -183,6 +183,9 @@ def render_generation_diagnostics():
     if raw.get("quality_issues"):
         st.caption("Quality checks triggered: " + ", ".join(raw.get("quality_issues", [])))
 
+    if raw.get("section_fallbacks"):
+        st.caption("Section-level fallback applied to: " + ", ".join(raw.get("section_fallbacks", [])))
+
     if raw.get("error"):
         st.warning("Generation error context: " + str(raw.get("error")))
 

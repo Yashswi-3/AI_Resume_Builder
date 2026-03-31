@@ -13,6 +13,7 @@ from src.domain.models import (
     ProjectItem,
     ResumeInput,
 )
+from src.services.resume.parsing.parser import extract_text_from_docx, extract_text_from_pdf
 from src.utils.text_utils import split_blocks, split_csv_or_lines, split_lines
 
 
@@ -74,10 +75,13 @@ LOCATION_HINTS = {
     "india",
     "bangalore",
     "bengaluru",
+    "in-office",
     "delhi",
     "mumbai",
     "pune",
     "noida",
+    "greater noida",
+    "uttar pradesh",
     "hyderabad",
     "onsite",
     "hybrid",
@@ -150,7 +154,10 @@ SEMANTIC_STOPWORDS = {
 
 EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PHONE_PATTERN = re.compile(r"\+?\d[\d\s().-]{8,}\d")
-URL_PATTERN = re.compile(r"(https?://\S+|www\.\S+|(?:linkedin|github)\.com/\S+)", re.IGNORECASE)
+URL_PATTERN = re.compile(
+    r"(https?://\S+|www\.\S+|(?:linkedin|github)\.com/\S+|[A-Za-z0-9.-]+\.[A-Za-z]{2,}/\S*)",
+    re.IGNORECASE,
+)
 
 SECTION_HEADING_ALIASES: Dict[str, set[str]] = {
     "professional_summary": {
@@ -256,7 +263,13 @@ def _clean_simple_lines(lines: List[str]) -> List[str]:
 
 
 def _strip_list_prefix(line: str) -> str:
-    return line.lstrip("-*• ").strip().strip("()").strip()
+    cleaned = re.sub(r"^(?:[-*•–—]+\s*)+", "", (line or "").strip())
+    return cleaned.strip().strip("()").strip()
+
+
+def _is_bullet_line(line: str) -> bool:
+    stripped = (line or "").strip()
+    return bool(re.match(r"^[-*•–—]\s+", stripped))
 
 
 def _truncate_words(text: str, max_words: int) -> str:
@@ -279,6 +292,26 @@ def _looks_like_duration(line: str) -> bool:
     if DURATION_PATTERN.search(text):
         return True
     return bool(YEAR_PATTERN.search(text)) and ("-" in text or " to " in lowered or "present" in lowered)
+
+
+def _extract_duration_and_prefix(line: str) -> Tuple[str, str]:
+    text = _strip_list_prefix(line)
+    match = DURATION_PATTERN.search(text)
+    if not match:
+        return "", ""
+    duration = text[match.start() : match.end()].strip(" ,-|")
+    prefix = text[: match.start()].strip(" ,-|")
+    return prefix, duration
+
+
+def _extract_year_and_prefix(line: str) -> Tuple[str, str]:
+    text = _strip_list_prefix(line)
+    match = YEAR_PATTERN.search(text)
+    if not match:
+        return "", ""
+    year = match.group(0)
+    prefix = text[: match.start()].strip(" ,-|")
+    return prefix, year
 
 
 def _looks_like_company(line: str) -> bool:
@@ -309,7 +342,7 @@ def _looks_like_role(line: str) -> bool:
         return False
     if not text[:1].isupper():
         return False
-    if "," in text and "/" not in text:
+    if "," in text and "/" not in text and not _has_hint_token(lowered, ROLE_HINTS):
         return False
     words = text.split()
     if len(words) > 12:
@@ -342,14 +375,18 @@ def _looks_like_location(line: str) -> bool:
     lowered = text.lower()
     if not text or _looks_like_duration(text):
         return False
+    if "." in text:
+        return False
+    if len(text) > 36:
+        return False
+    if _has_hint_token(lowered, LOCATION_HINTS):
+        return True
     if _has_hint_token(lowered, ROLE_HINTS):
         return False
     if _has_hint_token(lowered, COMPANY_HINTS):
         return False
     if _has_hint_token(lowered, HEADER_NOISE_TOKENS):
         return False
-    if _has_hint_token(lowered, LOCATION_HINTS):
-        return True
     if "," in text and len(text.split()) <= 8:
         return True
     return False
@@ -380,6 +417,68 @@ def _has_hint_token(text: str, hints: set[str]) -> bool:
         if re.search(rf"\b{re.escape(token)}\b", lowered):
             return True
     return False
+
+
+def _merge_wrapped_lines(lines: List[str]) -> List[str]:
+    merged: List[str] = []
+    for raw_line in lines:
+        line = (raw_line or "").strip()
+        if not line:
+            continue
+
+        if not merged:
+            merged.append(line)
+            continue
+
+        if _is_bullet_line(line):
+            merged.append(line)
+            continue
+
+        previous = merged[-1]
+        starts_lower = bool(line[:1]) and line[:1].islower()
+        short_fragment = len(line.split()) <= 9
+        continuation = (
+            starts_lower
+            or line[:1] in {",", ".", ";", ")"}
+            or (
+                short_fragment
+                and not _looks_like_technologies(line)
+                and not _looks_like_duration(line)
+                and not _looks_like_company(line)
+                and not _looks_like_role(line)
+                and not YEAR_PATTERN.search(line)
+            )
+        )
+
+        if continuation:
+            merged[-1] = f"{previous.rstrip('- ')} {line}".strip()
+        else:
+            merged.append(line)
+
+    return merged
+
+
+def _split_role_and_inline_location(text: str) -> Tuple[str, str]:
+    cleaned = _strip_list_prefix(text)
+    if not cleaned or "," not in cleaned:
+        return cleaned, ""
+
+    location_pattern = re.compile(
+        r"^(?P<role>.+?)\s+(?P<city>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2}),\s*(?P<rest>[^,]+)$"
+    )
+    match = location_pattern.match(cleaned)
+    if not match:
+        return cleaned, ""
+
+    role_part = match.group("role").strip()
+    location_part = f"{match.group('city').strip()}, {match.group('rest').strip()}"
+    if len(role_part.split()) < 2:
+        return cleaned, ""
+    if not _looks_like_role(role_part):
+        return cleaned, ""
+    if not _looks_like_location(location_part):
+        return cleaned, ""
+    return role_part, location_part
 
 
 def _rank_highlights(lines: List[str], max_items: int = 8, max_words: int = 24) -> List[str]:
@@ -428,6 +527,7 @@ def _rank_highlights(lines: List[str], max_items: int = 8, max_words: int = 24) 
 
 
 def _parse_loose_experience(lines: List[str]) -> ExperienceItem:
+    lines = _merge_wrapped_lines(lines)
     role = ""
     company = ""
     duration = ""
@@ -448,16 +548,35 @@ def _parse_loose_experience(lines: List[str]) -> ExperienceItem:
             continue
 
         if not duration and _looks_like_duration(line):
-            duration = line
+            prefix, parsed_duration = _extract_duration_and_prefix(line)
+            duration = parsed_duration or line
+            if prefix:
+                if not company and _looks_like_company(prefix):
+                    company = prefix
+                elif not role and _looks_like_role(prefix):
+                    role = prefix
+                elif not company:
+                    company = prefix
             continue
+
+        split_role, split_location = _split_role_and_inline_location(line)
+        if not role and split_role and split_role != line:
+            role = split_role
+            if split_location and not location:
+                location = split_location
+            continue
+
         if not company and _looks_like_company(line):
             company = line
             continue
+        if not role and _looks_like_role(line):
+            role_candidate, inline_location = _split_role_and_inline_location(line)
+            role = role_candidate or line
+            if inline_location and not location:
+                location = inline_location
+            continue
         if not location and _looks_like_location(line):
             location = line
-            continue
-        if not role and _looks_like_role(line):
-            role = line
             continue
 
         remaining.append(line)
@@ -495,6 +614,7 @@ def _parse_loose_experience(lines: List[str]) -> ExperienceItem:
 
 
 def _parse_loose_project(lines: List[str]) -> ProjectItem:
+    lines = _merge_wrapped_lines(lines)
     name = ""
     technologies = ""
     year = ""
@@ -513,8 +633,10 @@ def _parse_loose_project(lines: List[str]) -> ProjectItem:
             continue
 
         if not year and YEAR_PATTERN.search(line):
-            year_match = YEAR_PATTERN.search(line)
-            year = year_match.group(0) if year_match else ""
+            prefix, parsed_year = _extract_year_and_prefix(line)
+            year = parsed_year
+            if prefix and not name:
+                name = prefix
             continue
         if not technologies and _looks_like_technologies(line):
             technologies = line
@@ -597,7 +719,12 @@ def _is_valid_experience_item(item: ExperienceItem) -> bool:
         return False
     if role_key and company_key and role_key == company_key:
         return False
-    if item.role and "," in item.role and "/" not in item.role:
+    if (
+        item.role
+        and "," in item.role
+        and "/" not in item.role
+        and not _has_hint_token(item.role.lower(), ROLE_HINTS)
+    ):
         return False
     if item.role and re.search(r"\d", item.role) and len(item.role.split()) > 4:
         return False
@@ -619,20 +746,73 @@ def _is_valid_project_item(item: ProjectItem) -> bool:
 
 
 def _parse_experience(raw_text: str) -> List[ExperienceItem]:
+    def _looks_like_experience_header(line: str) -> bool:
+        return (not _is_bullet_line(line)) and bool(DURATION_PATTERN.search(_strip_list_prefix(line)))
+
+    def _split_experience_blocks(text: str) -> List[str]:
+        lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return []
+
+        blocks: List[List[str]] = []
+        current: List[str] = []
+
+        for line in lines:
+            cleaned = line.strip()
+            if _looks_like_experience_header(cleaned) and current:
+                blocks.append(current)
+                current = [cleaned]
+            else:
+                current.append(cleaned)
+
+        if current:
+            blocks.append(current)
+
+        return ["\n".join(block).strip() for block in blocks if block]
+
     items: List[ExperienceItem] = []
-    for block in split_blocks(raw_text):
+    blocks = split_blocks(raw_text)
+    if len(blocks) <= 1:
+        inferred_blocks = _split_experience_blocks(raw_text)
+        if len(inferred_blocks) > 1:
+            blocks = inferred_blocks
+
+    for block in blocks:
         lines = _clean_simple_lines([line.strip() for line in block.splitlines() if line.strip()])
+        lines = _merge_wrapped_lines(lines)
         if not lines:
             continue
 
         header_parts = [part.strip() for part in _strip_list_prefix(lines[0]).split("|")]
         if len(header_parts) >= 2:
-            bullets = _rank_highlights(lines[1:], max_items=8, max_words=24)
+            role = header_parts[0] if len(header_parts) > 0 else ""
+            company = header_parts[1] if len(header_parts) > 1 else ""
+            duration = header_parts[2] if len(header_parts) > 2 else ""
+            location = header_parts[3] if len(header_parts) > 3 else ""
+
+            header_bullets: List[str] = []
+            if location and (
+                _is_bullet_line(location)
+                or _has_hint_token(location.lower(), ACTION_VERBS)
+                or "." in location
+                or len(location) > 36
+                or "/" in location
+                or len(location.split()) > 14
+            ):
+                header_bullets.append(location)
+                location = ""
+
+            role_candidate, inline_location = _split_role_and_inline_location(role)
+            role = role_candidate or role
+            if inline_location and not location:
+                location = inline_location
+
+            bullets = _rank_highlights(header_bullets + lines[1:], max_items=8, max_words=24)
             candidate = ExperienceItem(
-                role=header_parts[0] if len(header_parts) > 0 else "",
-                company=header_parts[1] if len(header_parts) > 1 else "",
-                duration=header_parts[2] if len(header_parts) > 2 else "",
-                location=header_parts[3] if len(header_parts) > 3 else "",
+                role=role,
+                company=company,
+                duration=duration,
+                location=location,
                 bullet_points=bullets,
             )
             if _is_valid_experience_item(candidate):
@@ -647,9 +827,41 @@ def _parse_experience(raw_text: str) -> List[ExperienceItem]:
 
 
 def _parse_projects(raw_text: str) -> List[ProjectItem]:
+    def _looks_like_project_header(line: str) -> bool:
+        cleaned = _strip_list_prefix(line)
+        return (not _is_bullet_line(line)) and bool(YEAR_PATTERN.search(cleaned)) and len(cleaned.split()) <= 14
+
+    def _split_project_blocks(text: str) -> List[str]:
+        lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return []
+
+        blocks: List[List[str]] = []
+        current: List[str] = []
+
+        for line in lines:
+            cleaned = line.strip()
+            if _looks_like_project_header(cleaned) and current:
+                blocks.append(current)
+                current = [cleaned]
+            else:
+                current.append(cleaned)
+
+        if current:
+            blocks.append(current)
+
+        return ["\n".join(block).strip() for block in blocks if block]
+
     items: List[ProjectItem] = []
-    for block in split_blocks(raw_text):
+    blocks = split_blocks(raw_text)
+    if len(blocks) <= 1:
+        inferred_blocks = _split_project_blocks(raw_text)
+        if len(inferred_blocks) > 1:
+            blocks = inferred_blocks
+
+    for block in blocks:
         lines = _clean_simple_lines([line.strip() for line in block.splitlines() if line.strip()])
+        lines = _merge_wrapped_lines(lines)
         if not lines:
             continue
 
@@ -784,11 +996,18 @@ def _extract_skills(raw_text: str) -> List[str]:
         if not cleaned_line or _is_noise_line(cleaned_line):
             continue
 
-        pieces = [piece.strip() for piece in re.split(r"[,|;/•]+", cleaned_line) if piece.strip()]
+        # Normalize category prefixes into separators (e.g. "JavaScript ML: ..." -> "JavaScript, ...").
+        normalized_line = re.sub(
+            r"(?i)\b(programming|ml|machine learning|deep learning|computer vision|nlp|data\s*&\s*tools|data and tools|model evaluation)\s*:",
+            ",",
+            cleaned_line,
+        )
+
+        pieces = [piece.strip() for piece in re.split(r"[,|;/•]+", normalized_line) if piece.strip()]
         if not pieces:
             continue
 
-        if len(pieces) == 1 and len(cleaned_line.split()) > 6 and not _has_hint_token(cleaned_line.lower(), TECH_HINTS):
+        if len(pieces) == 1 and len(normalized_line.split()) > 6 and not _has_hint_token(normalized_line.lower(), TECH_HINTS):
             continue
 
         for piece in pieces:
@@ -837,6 +1056,35 @@ def _looks_like_contact_line(line: str) -> bool:
     if any(token in lowered for token in {"linkedin", "github", "portfolio", "phone", "contact"}):
         return True
     return False
+
+
+def _normalize_name_slug(candidate: str) -> str:
+    if not candidate:
+        return ""
+
+    parts = [re.sub(r"[^A-Za-z]", "", part) for part in re.split(r"[-_.\s]+", candidate)]
+    words = [part for part in parts if len(part) >= 2]
+    if len(words) < 2 or len(words) > 4:
+        return ""
+    return " ".join(word.capitalize() for word in words)
+
+
+def _derive_name_from_contacts(email: str, linkedin: str) -> str:
+    if linkedin:
+        normalized_linkedin = linkedin if linkedin.startswith("http") else f"https://{linkedin}"
+        match = re.search(r"linkedin\.com/(?:in|pub)/([^/?#]+)", normalized_linkedin, re.IGNORECASE)
+        if match:
+            linkedin_name = _normalize_name_slug(match.group(1))
+            if linkedin_name:
+                return linkedin_name
+
+    if email:
+        local_part = email.split("@", 1)[0]
+        email_name = _normalize_name_slug(local_part)
+        if email_name:
+            return email_name
+
+    return ""
 
 
 def _extract_personal_info(raw_text: str, preamble_lines: List[str]) -> Dict[str, str]:
@@ -895,7 +1143,8 @@ def _extract_personal_info(raw_text: str, preamble_lines: List[str]) -> Dict[str
             details["portfolio"] = normalized
 
     if not details["location"]:
-        for line in top_lines:
+        location_candidates = [line.strip() for line in preamble_lines if line.strip()][:10]
+        for line in location_candidates:
             cleaned_line = line.strip()
             lowered = cleaned_line.lower()
             if _looks_like_contact_line(cleaned_line) or _detect_section_heading(cleaned_line):
@@ -916,12 +1165,23 @@ def _extract_personal_info(raw_text: str, preamble_lines: List[str]) -> Dict[str
                 continue
             if _looks_like_contact_line(cleaned_line) or _detect_section_heading(cleaned_line):
                 continue
+            lowered = cleaned_line.lower()
+            if "," in cleaned_line:
+                continue
+            if _has_hint_token(lowered, ROLE_HINTS) or _has_hint_token(lowered, COMPANY_HINTS):
+                continue
             if re.search(r"\d", cleaned_line):
                 continue
             if len(words) < 2 or len(words) > 5:
                 continue
             details["full_name"] = cleaned_line
             break
+
+    if not details["full_name"]:
+        details["full_name"] = _derive_name_from_contacts(
+            details.get("email", ""),
+            details.get("linkedin", ""),
+        )
 
     return details
 
@@ -1106,49 +1366,48 @@ def render_resume_form() -> Tuple[bool, Optional[ResumeInput]]:
 
     _init_form_state_defaults()
 
-    # --- Resume upload section temporarily disabled ---
-    # uploaded_file = st.file_uploader(
-    #     "Upload your existing resume (PDF or DOCX)",
-    #     type=["pdf", "docx"],
-    #     help="Optional: Upload to auto-fill fields from your current resume.",
-    # )
-    #
-    # if uploaded_file is not None:
-    #     file_ext = os.path.splitext(uploaded_file.name)[-1].lower()
-    #     file_bytes = uploaded_file.getvalue()
-    #     file_hash = hashlib.md5(file_bytes).hexdigest() if file_bytes else ""
-    #     upload_signature = f"{uploaded_file.name}:{len(file_bytes)}:{file_hash}"
-    #
-    #     if st.session_state.get(UPLOAD_SIGNATURE_KEY) != upload_signature:
-    #         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-    #             tmp_file.write(file_bytes)
-    #             tmp_path = tmp_file.name
-    #
-    #         try:
-    #             if file_ext == ".pdf":
-    #                 import pdfplumber
-    #
-    #                 with pdfplumber.open(tmp_path) as pdf:
-    #                     extracted_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    #             elif file_ext == ".docx":
-    #                 import docx
-    #
-    #                 document = docx.Document(tmp_path)
-    #                 extracted_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
-    #             else:
-    #                 extracted_text = ""
-    #
-    #             if not extracted_text.strip():
-    #                 st.warning("Uploaded file could not be parsed into readable text.")
-    #             else:
-    #                 prefill = _build_prefill_from_resume_text(extracted_text)
-    #                 _apply_prefill_to_form_state(prefill)
-    #                 st.session_state[UPLOAD_SIGNATURE_KEY] = upload_signature
-    #                 st.success("Resume parsed successfully. Fields are auto-filled; review and refine before generating.")
-    #         except Exception as error:
-    #             st.error(f"Failed to extract and map resume data: {error}")
-    #         finally:
-    #             os.unlink(tmp_path)
+    uploaded_file = st.file_uploader(
+        "Upload your existing resume (PDF or DOCX)",
+        type=["pdf", "docx"],
+        help="Optional: Upload to auto-fill fields from your current resume.",
+    )
+
+    if uploaded_file is None:
+        st.session_state.pop(UPLOAD_SIGNATURE_KEY, None)
+    else:
+        file_ext = os.path.splitext(uploaded_file.name)[-1].lower()
+        file_bytes = uploaded_file.getvalue()
+        file_hash = hashlib.md5(file_bytes).hexdigest() if file_bytes else ""
+        upload_signature = f"{uploaded_file.name}:{len(file_bytes)}:{file_hash}"
+
+        if st.session_state.get(UPLOAD_SIGNATURE_KEY) != upload_signature:
+            tmp_path = ""
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                    tmp_file.write(file_bytes)
+                    tmp_path = tmp_file.name
+
+                if file_ext == ".pdf":
+                    extracted_text = extract_text_from_pdf(tmp_path)
+                elif file_ext == ".docx":
+                    extracted_text = extract_text_from_docx(tmp_path)
+                else:
+                    extracted_text = ""
+
+                if not extracted_text.strip():
+                    st.warning("Uploaded file could not be parsed into readable text.")
+                else:
+                    prefill = _build_prefill_from_resume_text(extracted_text)
+                    _apply_prefill_to_form_state(prefill)
+                    st.success(
+                        "Resume parsed successfully. Fields are auto-filled; review and refine before generating."
+                    )
+            except Exception as error:
+                st.error(f"Failed to extract and map resume data: {error}")
+            finally:
+                st.session_state[UPLOAD_SIGNATURE_KEY] = upload_signature
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
     with st.form("resume_input_form"):
         st.markdown("### Personal Information")
