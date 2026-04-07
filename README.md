@@ -1,64 +1,86 @@
-# AI Resume Builder (Streamlit + Gemini)
+# AI Resume Builder
 
-This project is a complete redevelopment of the resume builder as a modular AI application.
+Production-ready ATS resume platform with:
 
-## Highlights
+- FastAPI backend
+- Next.js frontend
+- Gemini-powered section generation
+- Queue-backed async job processing
+- SQL persistence for users, jobs, and records
+- PDF export
 
-- Clean modular architecture (UI, AI service, formatter, PDF, config).
-- Legacy top-level pipeline removed; app now runs only on the modular `src/` architecture.
-- Gemini API integration with robust model and endpoint fallback plus retry handling.
-- ATS-friendly resume generation using strict JSON schema and repair fallback.
-- Streamlit UI for structured data input, preview, and PDF download.
-- Target-role and job-description aware generation controls.
-- Built-in ATS scoring and job description keyword matching insights.
-- Built-in test mode: if all non-empty inputs are `test`, a dummy resume is generated locally.
+## Current Product Architecture
 
-## Architecture
+- `src/api/main.py`: FastAPI application entrypoint
+- `src/api/routers/auth.py`: register/login/current-user endpoints
+- `src/api/routers/resumes.py`: upload parse, generation jobs, status polling, records, PDF download
+- `src/api/worker_tasks.py`: queued resume generation task execution
+- `src/api/worker.py`: RQ worker process entrypoint
+- `src/services/resume/generator.py`: deterministic + AI rewrite resume pipeline
+- `src/services/resume/formatter.py`: template-aware markdown composition
+- `src/services/pdf/renderer.py`: template-aware PDF rendering
+- `web/`: Next.js frontend app
 
-- `app.py`: Streamlit entrypoint and orchestration.
-- `src/config/settings.py`: Environment-driven configuration.
-- `src/domain/models.py`: Dataclasses for input/output contracts.
-- `src/prompts/resume_prompt.py`: Prompt engineering and JSON schema constraints.
-- `src/services/ai/gemini_client.py`: Gemini API client.
-- `src/services/resume/generator.py`: AI generation, JSON parsing, fallback and dummy logic.
-- `src/services/resume/formatter.py`: Resume markdown composer.
-- `src/services/pdf/renderer.py`: ATS-friendly PDF generation.
-- `src/ui/forms.py`: Structured input collection and parsing.
-- `src/ui/preview.py`: Markdown preview and PDF download UI.
-- `src/features/ats/analyzer.py`: ATS score calculator and recommendations.
-- `src/features/job_matching/matcher.py`: JD keyword match scoring and gap detection.
+## Rollout Status
 
-## Setup
+Implemented from the practical rollout plan:
 
-1. Install dependencies:
+1. FastAPI endpoints with request/response schema validation.
+2. Next.js frontend with form, upload parse, preview, and generate flow.
+3. Auth, database persistence, queue-backed jobs, and async polling.
+4. Diagnostics payload, template switching, and deployment hardening.
 
-   python -m pip install -r requirements.txt
+## What Is Enforced
 
-2. Create `.env` from `.env.example` and add your Gemini key:
+- Frontend does not call Gemini directly.
+- Public product flow does not depend on Streamlit.
+- Deterministic parsing remains the structural source of truth.
+- Generation is queue-based for long-running workloads.
 
-   GEMINI_API_KEY=your_real_key
-  GEMINI_MAX_RETRIES=2
+## Quick Start (Local)
 
-3. Run the application:
+1. Install Python dependencies:
 
-   streamlit run app.py
+  `python -m pip install -r requirements.txt`
 
-## Input Formats
+2. Create env file:
 
-- Skills: comma-separated or one per line.
-- Target role/company and JD fields are optional but recommended for tailored results.
-- Education: one line per entry
-  - `Degree | Institution | Duration | Location | Details`
-- Work Experience: one block per role, separated by blank lines
-  - First line: `Role | Company | Duration | Location`
-  - Next lines: bullet points
-- Projects: one block per project, separated by blank lines
-  - First line: `Project Name | Technologies | Year`
-  - Next lines: bullet points
-- Certifications and Achievements: one per line.
+  `cp .env.example .env`
 
-## Run Command
+3. Run API:
 
-Use exactly this command from project root:
+  `uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000`
 
-streamlit run app.py
+4. Run worker (separate terminal):
+
+  `python -m src.api.worker`
+
+5. Run frontend:
+
+  `cd web && npm install && npm run dev`
+
+6. Open:
+
+  `http://localhost:3000`
+
+## Docker Compose Launch
+
+Set `GEMINI_API_KEY` in your shell or `.env`, then run:
+
+`docker compose up --build`
+
+Services:
+
+- Frontend: `http://localhost:3000`
+- API: `http://localhost:8000`
+- Postgres: `localhost:5432`
+- Redis: `localhost:6379`
+
+## Legacy Streamlit
+
+`app.py` remains available for local/internal debugging, but the production path is API + Next.js.
+
+## Additional Documentation
+
+- `docs/REPO_AUDIT.md`
+- `docs/IMPLEMENTATION_PLAN.md`

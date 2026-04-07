@@ -4,7 +4,20 @@ from src.domain.models import PersonalInfo, ResumeInput, ResumeOutput
 
 
 class ResumeFormatter:
-    def to_markdown(self, resume_input: ResumeInput, resume_output: ResumeOutput) -> str:
+    def to_markdown(
+        self,
+        resume_input: ResumeInput,
+        resume_output: ResumeOutput,
+        template_key: str = "classic",
+    ) -> str:
+        template = (template_key or "classic").strip().lower()
+        if template == "compact":
+            return self._to_compact_markdown(resume_input, resume_output)
+        if template == "modern":
+            return self._to_modern_markdown(resume_input, resume_output)
+        return self._to_classic_markdown(resume_input, resume_output)
+
+    def _to_classic_markdown(self, resume_input: ResumeInput, resume_output: ResumeOutput) -> str:
         parts: List[str] = []
 
         parts.extend(self._header_section(resume_input.personal_info))
@@ -15,6 +28,34 @@ class ResumeFormatter:
         parts.extend(self._section("Projects", resume_output.projects))
         parts.extend(self._section("Certifications", resume_output.certifications))
         parts.extend(self._section("Achievements", resume_output.achievements))
+
+        return "\n".join(parts).strip()
+
+    def _to_compact_markdown(self, resume_input: ResumeInput, resume_output: ResumeOutput) -> str:
+        parts: List[str] = []
+
+        parts.extend(self._header_section(resume_input.personal_info))
+        parts.extend(self._section("Professional Summary", resume_output.professional_summary))
+        parts.extend(self._section("Work Experience", resume_output.experience))
+        parts.extend(self._section("Projects", resume_output.projects))
+        parts.extend(self._inline_skills_section(resume_output.skills))
+        parts.extend(self._section("Education", resume_output.education))
+        parts.extend(self._section("Certifications", resume_output.certifications))
+        parts.extend(self._section("Achievements", resume_output.achievements))
+
+        return "\n".join(parts).strip()
+
+    def _to_modern_markdown(self, resume_input: ResumeInput, resume_output: ResumeOutput) -> str:
+        parts: List[str] = []
+
+        parts.extend(self._header_section(resume_input.personal_info))
+        parts.extend(self._section("Professional Summary", resume_output.professional_summary))
+        parts.extend(self._inline_skills_section(resume_output.skills))
+        parts.extend(self._section("Projects", resume_output.projects))
+        parts.extend(self._section("Work Experience", resume_output.experience))
+        parts.extend(self._section("Education", resume_output.education))
+        parts.extend(self._section("Achievements", resume_output.achievements))
+        parts.extend(self._section("Certifications", resume_output.certifications))
 
         return "\n".join(parts).strip()
 
@@ -54,3 +95,11 @@ class ResumeFormatter:
         section.extend([f"- {line}" for line in cleaned])
         section.append("")
         return section
+
+    def _inline_skills_section(self, values: List[str]) -> List[str]:
+        cleaned = [value.strip() for value in values if value and value.strip()]
+        if not cleaned:
+            return []
+
+        line = ", ".join(cleaned)
+        return ["## Skills", "", line, ""]

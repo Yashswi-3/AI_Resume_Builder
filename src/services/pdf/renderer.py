@@ -380,59 +380,67 @@ class _ResumePdf(FPDF):
 
 
 class ResumePdfRenderer:
-    def render(self, resume_input: ResumeInput, resume_output: ResumeOutput) -> bytes | None:
+    def render(
+        self,
+        resume_input: ResumeInput,
+        resume_output: ResumeOutput,
+        template_key: str = "classic",
+    ) -> bytes | None:
         try:
             pdf = _ResumePdf(resume_input.personal_info)
             pdf.add_page()
 
             summary_lines = self._summary_lines(resume_input, resume_output)
-            if summary_lines:
-                pdf.section_title("Professional Summary")
-                pdf.bullet_list(summary_lines)
-
             experience_blocks = self._experience_blocks(resume_input.experiences, resume_output.experience)
-            if experience_blocks:
-                pdf.section_title("Experience")
-                for block in experience_blocks:
-                    title = block.company.strip() or block.role.strip() or "Experience"
-                    subtitle = block.role.strip() if block.company.strip() and block.role.strip() else ""
-                    pdf.subheading(title, block.duration, subtitle, block.location)
-                    pdf.bullet_list(block.bullets)
-
             project_blocks = self._project_blocks(resume_input.projects, resume_output.projects)
-            if project_blocks:
-                pdf.section_title("Projects")
-                for block in project_blocks:
-                    title = block.name or "Project"
-                    pdf.subheading(title, block.year, block.technologies, "")
-                    pdf.bullet_list(block.bullets)
-
             achievements = self._simple_section_lines(resume_output.achievements, resume_input.achievements)
-            if achievements:
-                pdf.section_title("Achievements")
-                pdf.bullet_list(achievements)
-
             skill_lines = self._skill_lines(resume_output.skills, resume_input.skills)
-            if skill_lines:
-                pdf.section_title("Technical Skills")
-                pdf.bullet_list(skill_lines)
-
             certifications = self._simple_section_lines(resume_output.certifications, resume_input.certifications)
-            if certifications:
-                pdf.section_title("Certifications")
-                pdf.bullet_list(certifications)
-
             education_blocks = self._education_blocks(resume_input.education, resume_output.education)
-            if education_blocks:
-                pdf.section_title("Education")
-                for block in education_blocks:
-                    subtitle = self._join_non_empty(
-                        [block.degree, block.details],
-                        " | ",
-                    )
-                    title = block.institution or "Education"
-                    pdf.subheading(title, block.duration, subtitle, block.location)
-                    pdf.ln(LATEX_LIST_ITEM_SPACING_MM)
+
+            sections = self._section_sequence(template_key)
+            for section in sections:
+                if section == "summary" and summary_lines:
+                    pdf.section_title("Professional Summary")
+                    pdf.bullet_list(summary_lines)
+
+                if section == "experience" and experience_blocks:
+                    pdf.section_title("Experience")
+                    for block in experience_blocks:
+                        title = block.company.strip() or block.role.strip() or "Experience"
+                        subtitle = block.role.strip() if block.company.strip() and block.role.strip() else ""
+                        pdf.subheading(title, block.duration, subtitle, block.location)
+                        pdf.bullet_list(block.bullets)
+
+                if section == "projects" and project_blocks:
+                    pdf.section_title("Projects")
+                    for block in project_blocks:
+                        title = block.name or "Project"
+                        pdf.subheading(title, block.year, block.technologies, "")
+                        pdf.bullet_list(block.bullets)
+
+                if section == "skills" and skill_lines:
+                    pdf.section_title("Technical Skills")
+                    pdf.bullet_list(skill_lines)
+
+                if section == "education" and education_blocks:
+                    pdf.section_title("Education")
+                    for block in education_blocks:
+                        subtitle = self._join_non_empty(
+                            [block.degree, block.details],
+                            " | ",
+                        )
+                        title = block.institution or "Education"
+                        pdf.subheading(title, block.duration, subtitle, block.location)
+                        pdf.ln(LATEX_LIST_ITEM_SPACING_MM)
+
+                if section == "certifications" and certifications:
+                    pdf.section_title("Certifications")
+                    pdf.bullet_list(certifications)
+
+                if section == "achievements" and achievements:
+                    pdf.section_title("Achievements")
+                    pdf.bullet_list(achievements)
 
             output = pdf.output(dest="S")
             if isinstance(output, str):
@@ -444,6 +452,39 @@ class ResumePdfRenderer:
             print("PDF generation error:", error)
             traceback.print_exc()
             return None
+
+    def _section_sequence(self, template_key: str) -> List[str]:
+        template = (template_key or "classic").strip().lower()
+        if template == "compact":
+            return [
+                "summary",
+                "skills",
+                "experience",
+                "projects",
+                "education",
+                "certifications",
+                "achievements",
+            ]
+        if template == "modern":
+            return [
+                "summary",
+                "projects",
+                "experience",
+                "skills",
+                "education",
+                "achievements",
+                "certifications",
+            ]
+
+        return [
+            "summary",
+            "experience",
+            "projects",
+            "achievements",
+            "skills",
+            "certifications",
+            "education",
+        ]
 
     def _summary_lines(self, resume_input: ResumeInput, resume_output: ResumeOutput) -> List[str]:
         lines = self._clean_lines(resume_output.professional_summary)

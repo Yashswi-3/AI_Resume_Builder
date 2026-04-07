@@ -12,3 +12,12 @@ venv/
 
 # Streamlit cache
 .streamlit/cache/
+
+# Runtime data
+data/
+
+# Frontend artifacts
+web/node_modules/
+web/.next/
+web/out/
+web/.env.local
