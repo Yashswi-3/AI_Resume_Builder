@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.config import get_api_settings
 from src.api.db import init_db
 from src.api.routers.auth import router as auth_router
+from src.api.routers.ats_router import router as ats_router
 from src.api.routers.resumes import router as resumes_router
 
 
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router, prefix=settings.api_prefix)
     app.include_router(resumes_router, prefix=settings.api_prefix)
+    app.include_router(ats_router, prefix=settings.api_prefix)
 
     @app.on_event("startup")
     def on_startup() -> None:

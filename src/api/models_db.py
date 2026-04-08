@@ -13,6 +13,11 @@ JOB_STATUS_PROCESSING = "processing"
 JOB_STATUS_COMPLETED = "completed"
 JOB_STATUS_FAILED = "failed"
 
+ATS_JOB_STATUS_QUEUED = "queued"
+ATS_JOB_STATUS_PROCESSING = "processing"
+ATS_JOB_STATUS_COMPLETED = "completed"
+ATS_JOB_STATUS_FAILED = "failed"
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -88,6 +93,25 @@ class ResumeRecord(SQLModel, table=True):
     )
     pdf_path: str = Field(default="", sa_column=Column(Text, nullable=False))
     created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
+
+
+class ATSOptimizeJob(SQLModel, table=True):
+    __tablename__ = "ats_optimize_jobs"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    status: str = Field(default=ATS_JOB_STATUS_QUEUED, sa_column=Column(String(32), nullable=False, index=True))
+    request_payload: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    result_payload: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    error_message: str = Field(default="", sa_column=Column(Text, nullable=False))
+    pdf_path: str = Field(default="", sa_column=Column(Text, nullable=False))
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
+    updated_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
     )

@@ -6,6 +6,7 @@ from src.features.ats.analyzer import ATSAnalyzer
 from src.features.job_matching.matcher import JobDescriptionMatcher
 from src.services.ai.gemini_client import GeminiClient
 from src.services.pdf.renderer import ResumePdfRenderer
+from src.services.resume_optimizer import ResumeOptimizer
 from src.services.resume.formatter import ResumeFormatter
 from src.services.resume.generator import ResumeGenerator
 
@@ -17,6 +18,7 @@ class ResumeRuntime:
     pdf_renderer: ResumePdfRenderer
     ats_analyzer: ATSAnalyzer
     jd_matcher: JobDescriptionMatcher
+    resume_optimizer: ResumeOptimizer
 
 
 @lru_cache
@@ -39,4 +41,5 @@ def get_resume_runtime() -> ResumeRuntime:
         pdf_renderer=ResumePdfRenderer(),
         ats_analyzer=ATSAnalyzer(),
         jd_matcher=JobDescriptionMatcher(),
+        resume_optimizer=ResumeOptimizer(gemini_client=client),
     )

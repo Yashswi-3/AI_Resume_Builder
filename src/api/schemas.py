@@ -148,3 +148,36 @@ class ResumeRecordResponse(BaseModel):
     ats_result: Dict[str, Any] = Field(default_factory=dict)
     jd_result: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+
+class ATSAnalyzeResponse(BaseModel):
+    score: int
+    verdict: Literal["reject", "borderline", "strong"]
+    breakdown: Dict[str, int] = Field(default_factory=dict)
+    keyword_gaps: List[str] = Field(default_factory=list)
+    weak_sections: Dict[str, str] = Field(default_factory=dict)
+    recruiter_adjustments: Dict[str, int] = Field(default_factory=dict)
+    reason: str = ""
+
+
+class ATSOptimizeQueuedResponse(BaseModel):
+    job_id: UUID
+    status: Literal["queued", "processing", "completed", "failed"]
+    queue_backend: str
+
+
+class ATSOptimizedResumePayload(BaseModel):
+    skills: str = ""
+    experience: str = ""
+    projects: str = ""
+    education: str = ""
+    summary: str = ""
+
+
+class ATSOptimizeStatusResponse(BaseModel):
+    job_id: UUID
+    status: Literal["queued", "processing", "completed", "failed"]
+    error_message: str = ""
+    result: ATSOptimizedResumePayload | None = None
+    created_at: datetime
+    updated_at: datetime

@@ -9,15 +9,21 @@ from src.api.config import get_api_settings
 from src.api.db import get_engine
 from src.api.mappers import from_domain_resume_output, to_domain_resume_input
 from src.api.models_db import (
+    ATS_JOB_STATUS_COMPLETED,
+    ATS_JOB_STATUS_FAILED,
+    ATS_JOB_STATUS_PROCESSING,
     JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
     JOB_STATUS_PROCESSING,
+    ATSOptimizeJob,
     ResumeJob,
     ResumeRecord,
     utc_now,
 )
 from src.api.runtime import get_resume_runtime
 from src.api.schemas import ResumeGenerationRequest
+from src.features.ats.jd_loader import get_role, parse_jd_text
+from src.services.resume.parsing.parser import parse_resume
 
 
 def run_resume_job(job_id: str) -> None:
@@ -105,6 +111,58 @@ def run_resume_job(job_id: str) -> None:
             session.commit()
         except Exception as error:
             job.status = JOB_STATUS_FAILED
+            job.error_message = str(error)
+            job.updated_at = utc_now()
+            session.add(job)
+            session.commit()
+
+
+def run_ats_optimize_job(job_id: str) -> None:
+    try:
+        parsed_job_id = UUID(str(job_id))
+    except ValueError:
+        return
+
+    runtime = get_resume_runtime()
+    engine = get_engine()
+
+    with Session(engine) as session:
+        job = session.exec(select(ATSOptimizeJob).where(ATSOptimizeJob.id == parsed_job_id)).first()
+        if not job:
+            return
+
+        job.status = ATS_JOB_STATUS_PROCESSING
+        job.updated_at = utc_now()
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+
+        try:
+            payload = dict(job.request_payload or {})
+            resume_bytes = bytes(payload.get("resume_bytes", []))
+            mime_type = str(payload.get("mime_type", ""))
+            role_id = str(payload.get("role_id", "")).strip()
+            jd_text = str(payload.get("jd_text", "")).strip()
+            score_payload = payload.get("score_result") or {}
+
+            resume_data = parse_resume(file_bytes=resume_bytes, mime_type=mime_type)
+            role_spec = get_role(role_id) if role_id else parse_jd_text(jd_text)
+            keyword_gaps = list(score_payload.get("keyword_gaps") or role_spec.high_impact_keywords)
+
+            optimized = runtime.resume_optimizer.optimize(
+                resume_data=resume_data,
+                role_spec=role_spec,
+                keyword_gaps=keyword_gaps,
+            )
+
+            job.status = ATS_JOB_STATUS_COMPLETED
+            job.result_payload = {"optimized_resume": optimized.to_dict()}
+            job.updated_at = utc_now()
+            job.error_message = ""
+            session.add(job)
+            session.commit()
+        except Exception as error:
+            job.status = ATS_JOB_STATUS_FAILED
             job.error_message = str(error)
             job.updated_at = utc_now()
             session.add(job)

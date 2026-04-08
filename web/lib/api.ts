@@ -294,3 +294,117 @@ export function getResumeJob(jobId: string, token: string) {
 export function listResumeRecords(token: string) {
   return apiRequest<Array<{ id: string; title: string; created_at: string }>>("/resumes/records", {}, token);
 }
+
+export type ATSVerdict = "reject" | "borderline" | "strong";
+
+export interface ATSAnalyzeResponse {
+  score: number;
+  verdict: ATSVerdict;
+  breakdown: {
+    skills: number;
+    experience: number;
+    projects: number;
+    format: number;
+  };
+  keyword_gaps: string[];
+  weak_sections: Record<string, string>;
+  recruiter_adjustments: Record<string, number>;
+  reason: string;
+}
+
+export interface ATSRoleSpec {
+  display_name: string;
+  category: string;
+  required: string[];
+  preferred: string[];
+}
+
+export type ATSRoleMap = Record<string, ATSRoleSpec>;
+
+export interface ATSRoleOrJDInput {
+  role_id: string;
+  jd_text: string;
+}
+
+export interface ATSOptimizeQueuedResponse {
+  job_id: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  queue_backend: string;
+}
+
+export interface ATSOptimizedResumePayload {
+  skills: string;
+  experience: string;
+  projects: string;
+  education: string;
+  summary: string;
+}
+
+export interface ATSOptimizeStatusResponse {
+  job_id: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  error_message: string;
+  result: ATSOptimizedResumePayload | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function getAtsRoles() {
+  return apiRequest<ATSRoleMap>("/ats/roles", { method: "GET" });
+}
+
+export function analyzeResume(file: File, input: ATSRoleOrJDInput) {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (input.role_id) {
+    formData.append("role_id", input.role_id);
+  }
+  if (input.jd_text) {
+    formData.append("jd_text", input.jd_text);
+  }
+
+  return apiRequest<ATSAnalyzeResponse>(
+    "/ats/analyze",
+    {
+      method: "POST",
+      body: formData,
+      headers: {},
+    }
+  );
+}
+
+export function optimizeResume(file: File, scoreResult: ATSAnalyzeResponse, input: ATSRoleOrJDInput) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("score_result", JSON.stringify(scoreResult));
+  if (input.role_id) {
+    formData.append("role_id", input.role_id);
+  }
+  if (input.jd_text) {
+    formData.append("jd_text", input.jd_text);
+  }
+
+  return apiRequest<ATSOptimizeQueuedResponse>(
+    "/ats/optimize",
+    {
+      method: "POST",
+      body: formData,
+      headers: {},
+    }
+  );
+}
+
+export function getOptimizeStatus(jobId: string) {
+  return apiRequest<ATSOptimizeStatusResponse>(`/ats/optimize/${jobId}/status`, { method: "GET" });
+}
+
+export async function exportPDF(jobId: string): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${API_BASE_URL}/ats/export/${jobId}`, { method: "GET" });
+  if (!response.ok) {
+    throw new Error(`Export failed: ${response.status}`);
+  }
+  return {
+    blob: await response.blob(),
+    filename: getFilenameFromDisposition(response.headers.get("Content-Disposition")),
+  };
+}
